@@ -1,0 +1,243 @@
+---
+title: "Assignment 9"
+output: flexdashboard::flex_dashboard
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r global, include = F}
+options(tigris_use_cache = F) 
+options(tigris_use_cache = T)
+
+library(flexdashboard)
+library(tidyverse)
+library(plotly)
+library(sf)
+library(tigris)
+library(leaflet)
+library(data.table)
+
+
+bay_county_names <- c("Alameda", "Contra Costa", "Marin", "Napa", "San Francisco", 
+                      "San Mateo", "Santa Clara", "Solano", "Sonoma")
+
+bay_counties <- counties("CA", cb=T, progress_bar=F) %>% filter(NAME %in% bay_county_names)
+
+usa_zips <- zctas(cb=T, progress_bar=F)
+
+bay_zips <- usa_zips %>% st_centroid() %>% .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% left_join(usa_zips %>% select(GEOID10)) %>% st_as_sf()
+
+
+type1 <- "Electric"
+type2 <- "Gas"
+
+pge_4yrs_elec <- NULL
+pge_4yrs_gas <- NULL
+
+for(year in c(2017, 2018, 2019, 2020)) {
+  for(quarter in 1:4) {
+    
+    if(year==2020 && quarter==4) {
+        break
+    }
+      
+    filename1 <- paste0("PGE_", year, "_Q", quarter, "_", type1, "UsageByZip.csv")
+    temp1 <- read_csv(filename1)
+    pge_4yrs_elec <- rbind(pge_4yrs_elec, temp1)
+    
+    filename2 <- paste0("PGE_", year, "_Q", quarter, "_", type2, "UsageByZip.csv")
+    temp2 <- read_csv(filename2)
+    pge_4yrs_gas <- rbind(pge_4yrs_gas, temp2)
+  }
+}
+
+
+pge_4yrs_elec_filter <- filter(pge_4yrs_elec, CUSTOMERCLASS %in% 
+                                 c("Elec- Residential", "Elec- Commercial"))
+
+pge_4yrs_gas_filter <- filter(pge_4yrs_gas, CUSTOMERCLASS %in% 
+                                 c("Gas- Residential", "Gas- Commercial"))
+
+pge_4yrs_elec_select <- select(pge_4yrs_elec_filter, !c(COMBINED, AVERAGEKWH))
+pge_4yrs_gas_select <- select(pge_4yrs_gas_filter, !c(COMBINED, AVERAGETHM))
+
+pge_4yrs_elec_bay <- filter(pge_4yrs_elec_select, ZIPCODE %in% bay_zips$ZCTA5CE10)
+pge_4yrs_gas_bay <- filter(pge_4yrs_gas_select, ZIPCODE %in% bay_zips$ZCTA5CE10)
+
+
+pge_4yrs_elec_bay_group <- group_by(pge_4yrs_elec_bay, MONTH, YEAR, CUSTOMERCLASS)
+pge_4yrs_gas_bay_group <- group_by(pge_4yrs_gas_bay, MONTH, YEAR, CUSTOMERCLASS)
+
+pge_4yrs_elec_bay_sum <- summarize(pge_4yrs_elec_bay_group, TOTALKWH=sum(TOTALKWH, na.rm=T))
+pge_4yrs_gas_bay_sum <- summarize(pge_4yrs_gas_bay_group, TOTALTHM=sum(TOTALTHM, na.rm=T))
+
+pge_4yrs_elec_bay_sum_sort <- pge_4yrs_elec_bay_sum[
+  order(pge_4yrs_elec_bay_sum$YEAR, pge_4yrs_elec_bay_sum$MONTH), ]
+
+pge_4yrs_gas_bay_sum_sort <- pge_4yrs_gas_bay_sum[
+  order(pge_4yrs_gas_bay_sum$YEAR, pge_4yrs_gas_bay_sum$MONTH), ]
+
+
+pge_final <- pge_4yrs_elec_bay_sum_sort
+pge_final$TOTALTHM <- pge_4yrs_gas_bay_sum_sort$TOTALTHM
+
+pge_final$KBTU_ELEC <- pge_final$TOTALKWH * 3.412
+pge_final$KBTU_GAS <- pge_final$TOTALTHM * 100.00000947817
+
+
+pge_res <- filter(pge_final, CUSTOMERCLASS %in% c("Elec- Residential", "Gas- Residential"))
+pge_comm <- filter(pge_final, CUSTOMERCLASS %in% c("Elec- Commercial", "Gas- Commercial"))
+
+pge_res$CUSTOMERCLASS <- "Residential"
+pge_comm$CUSTOMERCLASS <- "Commercial"
+
+
+pge_chart_res <- 
+  pge_res %>% 
+  ggplot() + 
+  geom_line(aes(x=1:45, y=KBTU_ELEC, color="darkred")) + 
+  geom_line(aes(x=1:45, y=KBTU_GAS, color="darkblue")) + 
+  labs(x="Month", y="kBTU", title="PG&E Monthly Residential Electricity & Gas Usage 
+       in the Bay Area, 2017-2020") + 
+  scale_colour_manual(name="Type", values=c("darkred"="darkred", "darkblue"="darkblue"), 
+                      labels = c("Electricity", "Gas"))
+
+pge_chart_comm <- 
+  pge_comm %>% 
+  ggplot() + 
+  geom_line(aes(x=1:45, y=KBTU_ELEC, color="darkred")) +
+  geom_line(aes(x=1:45, y=KBTU_GAS, color="darkblue")) + 
+  labs(x="Month", y="kBTU", title="PG&E Monthly Commercial Electricity & Gas Usage 
+       in the Bay Area, 2017-2020") + 
+  scale_colour_manual(name="Type", values=c("darkred"="darkred","darkblue"="darkblue"), 
+                      labels = c("Electricity", "Gas"))
+
+
+usa_zips <- 
+  zctas(cb = T, progress_bar = F)
+
+bay_zips <-
+  usa_zips %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(usa_zips %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+
+elec_jul_19 <-
+  pge_4yrs_elec_bay %>% 
+  filter(CUSTOMERCLASS == "Elec- Residential") %>% 
+  filter(YEAR %in% c(2019), MONTH %in% c(7)) %>%
+  mutate(
+    ZIPCODE = ZIPCODE %>% as.character()
+  ) %>% 
+  group_by(ZIPCODE) %>% 
+  summarize(
+    TOTALKWH = sum(TOTALKWH, na.rm = T)
+  ) %>% 
+  right_join(
+    bay_zips %>% select(GEOID10),
+    by = c("ZIPCODE" = "GEOID10")
+  ) %>% 
+  st_as_sf() %>% 
+  st_transform(4326)
+
+elec_jul_20 <-
+  pge_4yrs_elec_bay %>% 
+  filter(CUSTOMERCLASS == "Elec- Residential") %>% 
+  filter(YEAR %in% c(2020), MONTH %in% c(7)) %>%
+  mutate(
+    ZIPCODE = ZIPCODE %>% as.character()
+  ) %>% 
+  group_by(ZIPCODE) %>% 
+  summarize(
+    TOTALKWH = sum(TOTALKWH, na.rm = T)
+  ) %>% 
+  right_join(
+    bay_zips %>% select(GEOID10),
+    by = c("ZIPCODE" = "GEOID10")
+  ) %>% 
+  st_as_sf() %>% 
+  st_transform(4326)
+
+elec_jul_19$TOTALKBTU19 <- elec_jul_19$TOTALKWH * 3.412
+elec_jul_20$TOTALKBTU20 <- elec_jul_20$TOTALKWH * 3.412
+
+elec_jul_19 <- select(elec_jul_19, c(ZIPCODE, TOTALKBTU19))
+elec_jul_20 <- select(elec_jul_20, c(ZIPCODE, TOTALKBTU20))
+
+elec_perc_change <- cbind(elec_jul_19, elec_jul_20)
+elec_perc_change <- select(elec_perc_change, !c(ZIPCODE.1))
+elec_perc_change$CHANGE <- 0
+
+for (i in 1:nrow(elec_perc_change)) {
+  elec_perc_change[i,]$CHANGE <- ((elec_perc_change[i,]$TOTALKBTU20 - elec_perc_change[i,]$TOTALKBTU19) / elec_perc_change[i,]$TOTALKBTU19) * 100
+}
+
+elec_perc_change <- na.omit(elec_perc_change)
+elec_perc_change <- filter(elec_perc_change, CHANGE != Inf)
+
+
+
+```
+
+Column
+-------------------------------------
+
+Here are the charts showing total monthly electricity and gas consumption by residential and commercial sectors in the nine Bay Area counties from January 2017 to September 2020 as reported by PG&E.
+
+### Residential Consumption
+
+```{r}
+pge_chart_res
+```
+
+### Commercial Consumption
+
+```{r}
+pge_chart_comm
+```
+
+Column
+-------------------------------------
+
+Here is an interactive map showing percentage change in residential electricity use by ZCTA in the nine Bay Area counties between July 2019 and July 2020.
+
+### Percent Change due to COVID-19
+
+```{r}
+res_pal <- colorNumeric(
+  palette = "Blues",
+  domain = 
+    elec_perc_change$CHANGE
+)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = elec_perc_change,
+    fillColor = ~res_pal(CHANGE),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(CHANGE), 
+      " % change in ",
+      ZIPCODE
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = elec_perc_change,
+    pal = res_pal,
+    values = ~CHANGE,
+    title = "% Change in Res. El. 7/19-7/20"
+  )
+```
